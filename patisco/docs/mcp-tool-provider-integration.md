@@ -2,7 +2,7 @@
 
 > 類型：資料工具型 MCP Server（訂單等資料查詢）
 > 協議：標準 MCP Streamable HTTP Transport (JSON-RPC 2.0)
-> 服務：https://mcp.patisco.com
+> 服務：https://mcp.patisco.com/mcp
 > 日期：2026-02-23
 
 ---
@@ -25,7 +25,7 @@ AI Agent 呼叫工具（例如 patisco_get_orders）
   └─ withFreshCreds()
        ├─ JWT 距到期 < 5 分鐘  →  GET /auth/refresh  →  更新 credential store
        └─ JWT 仍有效           →  直接使用
-  └─ POST /  { method: "tools/call", params: { name, arguments } }
+  └─ POST /  { method: "tools/call", params: { name, arguments }, sessionId }
        └─ Authorization: Bearer <jwt>
           X-Api-Key: <apiKey>
 ```
@@ -99,7 +99,7 @@ openclaw auth patisco
 
 ## 六、MCP Protocol 格式（Streamable HTTP）
 
-**Request（POST https://mcp.patisco.com）：**
+**Request（POST https://mcp.patisco.com/mcp）：**
 ```json
 {
   "jsonrpc": "2.0",
@@ -108,7 +108,8 @@ openclaw auth patisco
   "params": {
     "name": "get_orders",
     "arguments": { "status": "pending", "limit": 10 }
-  }
+  },
+  "sessionId": "stable-hash-from-agent-dir"
 }
 ```
 

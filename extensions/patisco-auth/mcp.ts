@@ -1,7 +1,7 @@
 /**
  * Patisco MCP Client — 標準 MCP Streamable HTTP Transport (JSON-RPC 2.0)。
  *
- * 端點：POST https://mcp.patisco.com
+ * 端點：POST https://mcp.patisco.com/mcp
  * 每次呼叫前由 withFreshCreds() 自動 refresh JWT。
  *
  * 參考規格：https://spec.modelcontextprotocol.io/specification/basic/transports/
@@ -9,8 +9,9 @@
 import { ensureAuthProfileStore } from "../../src/agents/auth-profiles/store.js";
 import { maybeRefreshJwt, JWT_PROFILE_ID, API_KEY_PROFILE_ID } from "./auth.js";
 import type { PatiscoCredentials } from "./auth.js";
+import { createHash } from "node:crypto";
 
-const MCP_URL = "https://mcp.patisco.com";
+const MCP_URL = "https://mcp.patisco.com/mcp";
 
 let requestId = 1;
 
@@ -58,6 +59,7 @@ type JsonRpcRequest = {
   id: number;
   method: string;
   params?: unknown;
+  sessionId?: string;
 };
 
 type JsonRpcResponse<T = unknown> = {
@@ -67,16 +69,24 @@ type JsonRpcResponse<T = unknown> = {
   error?: { code: number; message: string; data?: unknown };
 };
 
+/** 根據 agentDir 產生穩定的 sessionId (用於後端 Server 路由)。 */
+function getSessionId(agentDir?: string): string {
+  if (!agentDir) return "global";
+  return createHash("md5").update(agentDir).digest("hex");
+}
+
 async function rpc<T>(
   method: string,
   params: unknown,
   creds: PatiscoCredentials,
+  agentDir?: string,
 ): Promise<T> {
   const body: JsonRpcRequest = {
     jsonrpc: "2.0",
     id: requestId++,
     method,
     params,
+    sessionId: getSessionId(agentDir),
   };
 
   const res = await fetch(MCP_URL, {
@@ -126,7 +136,10 @@ type CallToolResult = {
 };
 
 /** 初始化 MCP session（部分 server 必要）。 */
-async function initialize(creds: PatiscoCredentials): Promise<void> {
+async function initialize(
+  creds: PatiscoCredentials,
+  agentDir?: string,
+): Promise<void> {
   await rpc(
     "initialize",
     {
@@ -135,6 +148,7 @@ async function initialize(creds: PatiscoCredentials): Promise<void> {
       clientInfo: { name: "openclaw-patisco", version: "1.0.0" },
     },
     creds,
+    agentDir,
   ).catch(() => {
     // 部分 HTTP server 不強制 initialize，忽略錯誤繼續
   });
@@ -143,8 +157,8 @@ async function initialize(creds: PatiscoCredentials): Promise<void> {
 /** 取得 MCP server 提供的所有工具清單。 */
 export async function listMcpTools(agentDir?: string): Promise<McpTool[]> {
   const creds = await withFreshCreds(agentDir);
-  await initialize(creds);
-  const result = await rpc<ListToolsResult>("tools/list", {}, creds);
+  await initialize(creds, agentDir);
+  const result = await rpc<ListToolsResult>("tools/list", {}, creds, agentDir);
   return result.tools ?? [];
 }
 
@@ -159,5 +173,6 @@ export async function callMcpTool(
     "tools/call",
     { name: toolName, arguments: args },
     creds,
+    agentDir,
   );
 }

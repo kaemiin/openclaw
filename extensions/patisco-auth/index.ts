@@ -31,7 +31,7 @@ function mcpToolToAgentTool(mcpTool: McpTool, agentDir?: string): AnyAgentTool {
     async execute(_toolCallId, params) {
       // 移除 _agentDir 注入鍵（若有），其餘全數傳給 MCP server
       const { _agentDir: _dir, ...mcpArgs } = params as Record<string, unknown>;
-      const result = await callMcpTool(mcpTool.name, mcpArgs, agentDir);
+      const result = await callMcpTool(mcpTool.name, mcpArgs, (_dir as string) || agentDir);
 
       // 若 MCP server 回報工具執行錯誤，顯示明確訊息
       if (result.isError) {
