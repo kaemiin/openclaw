@@ -2,7 +2,7 @@
 
 > 類型：資料工具型 MCP Server（訂單等資料查詢）
 > 協議：標準 MCP Streamable HTTP Transport (JSON-RPC 2.0)
-> 服務：https://mcp.patisco.com/
+> 服務：https://mcp.patisco.com/mcp
 > 日期：2026-02-23
 
 ---
@@ -99,7 +99,7 @@ openclaw auth patisco
 
 ## 六、MCP Protocol 格式（Streamable HTTP）
 
-**Request（POST https://mcp.patisco.com/）：**
+**Request（POST https://mcp.patisco.com/mcp）：**
 ```json
 {
   "jsonrpc": "2.0",

@@ -1,7 +1,7 @@
 /**
  * Patisco MCP Client — 標準 MCP Streamable HTTP Transport (JSON-RPC 2.0)。
  *
- * 端點：POST https://mcp.patisco.com/
+ * 端點：POST https://mcp.patisco.com/mcp
  * 每次呼叫前由 withFreshCreds() 自動 refresh JWT。
  *
  * 參考規格：https://spec.modelcontextprotocol.io/specification/basic/transports/
@@ -10,7 +10,7 @@ import { ensureAuthProfileStore } from "../../src/agents/auth-profiles/store.js"
 import { maybeRefreshJwt, JWT_PROFILE_ID, API_KEY_PROFILE_ID } from "./auth.js";
 import type { PatiscoCredentials } from "./auth.js";
 
-const MCP_URL = "https://mcp.patisco.com/";
+const MCP_URL = "https://mcp.patisco.com/mcp";
 
 let requestId = 1;
 
