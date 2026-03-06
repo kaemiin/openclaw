@@ -82,15 +82,21 @@ async function rpc<T>(
   creds: PatiscoCredentials,
   agentDir?: string,
 ): Promise<T> {
+  const sessionId = getSessionId(agentDir);
   const body: JsonRpcRequest = {
     jsonrpc: "2.0",
     id: requestId++,
     method,
     params,
-    sessionId: getSessionId(agentDir),
+    sessionId,
   };
 
-  const res = await fetch(MCP_URL, {
+  // 伺服器目前要求 sessionId 必須放在 query parameter；
+  // body 仍保留 sessionId 以相容標準 JSON-RPC 封包。
+  const url = new URL(MCP_URL);
+  url.searchParams.set("sessionId", sessionId);
+
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
