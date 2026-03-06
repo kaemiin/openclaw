@@ -22,11 +22,19 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 export async function loginPatisco(
   ctx: ProviderAuthContext,
 ): Promise<ProviderAuthResult> {
+  await ctx.prompter.note(
+    "登入 Patisco MCP（目前 CLI 不支援密碼遮罩，請在安全環境輸入）",
+    "Patisco 登入",
+  );
+
   const loginId = await ctx.prompter.text({
-    message: "帳號 (loginId)",
+    message: "請輸入 loginId（帳號）",
+    placeholder: "name@example.com",
+    validate: (value) => (value.trim().length > 0 ? undefined : "loginId 不能空白"),
   });
   const password = await ctx.prompter.text({
-    message: "密碼（輸入時會明文顯示）",
+    message: "請輸入密碼（明文顯示）",
+    validate: (value) => (value.length > 0 ? undefined : "密碼不能空白"),
   });
 
   const progress = ctx.prompter.progress("連線驗證中…");
@@ -97,7 +105,7 @@ export async function maybeRefreshJwt(
 
   if (!res.ok) {
     throw new Error(
-      "JWT refresh 失敗，請重新登入：openclaw auth patisco",
+      "JWT refresh 失敗，請重新登入：openclaw models auth login --provider patisco --method patisco:login",
     );
   }
 
