@@ -1,157 +1,111 @@
-# Patisco MCP Tool Provider 整合
+# Patisco MCP Tool Provider 整合（目前版本）
 
-> 類型：資料工具型 MCP Server（訂單等資料查詢）
-> 協議：標準 MCP Streamable HTTP Transport (JSON-RPC 2.0)
-> 服務：https://mcp.patisco.com/mcp
-> 日期：2026-02-23
+> 更新日期：2026-03-06
+> 類型：資料工具型 MCP Server（PI / 訂單查詢）
+> 實際採用傳輸：**Unary JSON-RPC（POST /）**
 
 ---
 
-## 一、架構總覽
+## 一、最終架構（已上線做法）
 
-```
-openclaw auth patisco
-  └─ POST /auth/login  →  { jwt (1h TTL), apiKey (永久) }
-       └─ 存入 ~/.openclaw/credentials/
-            ├── patisco:token    (TokenCredential, expires = now + 1h)
-            └── patisco:api-key  (ApiKeyCredential)
+```text
+openclaw models auth login --provider patisco --method patisco:login
+  └─ POST /auth/login -> jwt + apiKey
+       └─ 寫入 ~/.openclaw/credentials/
 
-Plugin 啟動
-  └─ discoverAndRegisterTools()
-       └─ listMcpTools()
-            └─ POST /  { method: "tools/list" }  →  動態註冊所有工具
+Plugin 啟動（extensions/patisco-auth/index.ts）
+  └─ listMcpTools() -> POST /  method=tools/list
+       └─ 動態註冊工具（patisco_*）
 
-AI Agent 呼叫工具（例如 patisco_get_orders）
-  └─ withFreshCreds()
-       ├─ JWT 距到期 < 5 分鐘  →  GET /auth/refresh  →  更新 credential store
-       └─ JWT 仍有效           →  直接使用
-  └─ POST /  { method: "tools/call", params: { name, arguments }, sessionId }
+Agent 呼叫工具
+  └─ callMcpTool() -> POST /  method=tools/call
        └─ Authorization: Bearer <jwt>
           X-Api-Key: <apiKey>
 ```
 
 ---
 
-## 二、JWT Refresh 策略
+## 二、為何改用 POST /（不是 /mcp SSE）
 
-JWT 有效期 **1 小時**（後端 1-hour window）。
+在 `PatiscoG4MCPGateway/src/routes/mcp.ts` 中：
 
-| 時機 | 行為 |
-|------|------|
-| 距過期 ≥ 5 分鐘 | 直接使用現有 JWT |
-| 距過期 < 5 分鐘 | 自動呼叫 `GET /auth/refresh`，更新 credential store |
-| 後端 window 內 | 後端回傳快取 JWT（不呼叫 AuthServer） |
-| 後端 window 外 | 後端向 AuthServer 取新 JWT 並更新 session |
-| refresh 失敗（401）| 拋出明確錯誤：「請重新登入：openclaw auth patisco」 |
+- `POST /mcp` 需要 `sessionId` query
+- 該 `sessionId` 必須先由 `GET /mcp` 建立並保存在 server 端 SSE connection map
+- 若未完整維持 SSE lifecycle，會出現：
+  - `Missing or invalid sessionId query parameter`
+  - `SSE session not found: ...`
 
-`upsertAuthProfileWithLock` 使用 file lock，多 agent 並行時安全。
-
----
-
-## 三、目錄結構
-
-```
-extensions/patisco-auth/
-├── index.ts        # Plugin 入口（auth provider + 動態工具發現）
-├── auth.ts         # loginPatisco() + maybeRefreshJwt()
-├── mcp.ts          # MCP JSON-RPC client（loadCredentials/listMcpTools/callMcpTool）
-└── package.json
-```
+由於同一服務已提供 `POST /` unary RPC（不需 sessionId），
+所以 OpenClaw plugin 最終改走 `POST /`，避免 SSE session 管理複雜度。
 
 ---
 
-## 四、檔案說明
+## 三、mcp.ts 目前行為
 
-### `auth.ts`
-- `loginPatisco(ctx)` — 互動式帳密登入，存 JWT（TokenCredential）+ API Key（ApiKeyCredential）
-- `maybeRefreshJwt(creds, agentDir?)` — 距 JWT 到期 < 5 分鐘時自動 refresh 並寫回 store
-
-### `mcp.ts`
-- `loadCredentials(agentDir?)` — 從 credential store 讀取 JWT + API Key
-- `withFreshCreds(agentDir?)` — 確保 JWT 有效後回傳（含 auto-refresh）
-- `listMcpTools(agentDir?)` — 呼叫 `tools/list`，取得 server 提供的工具清單
-- `callMcpTool(name, args, agentDir?)` — 呼叫 `tools/call`
-
-### `index.ts`
-- 註冊 `ProviderPlugin`（觸發 `openclaw auth patisco`）
-- 非同步執行 `discoverAndRegisterTools()`：抓 `tools/list`，每個工具包裝成 `AnyAgentTool` 並呼叫 `api.registerTool()`
-- MCP tool 的 `inputSchema`（JSON Schema）以 `Type.Unsafe()` 包裝為 TypeBox schema
+- endpoint：`https://.../`（root）
+- 每次請求送 JSON-RPC 2.0 body：
+  - `initialize`
+  - `tools/list`
+  - `tools/call`
+- headers：
+  - `Authorization: Bearer <jwt>`
+  - `X-Api-Key: <apiKey>`
+  - `Content-Type: application/json`
+  - `Accept: application/json`
+- 不再使用 `sessionId` / SSE bootstrap
 
 ---
 
-## 五、使用流程
+## 四、工具註冊流程
+
+1. plugin 載入
+2. `discoverAndRegisterTools()` 呼叫 `listMcpTools()`
+3. 取得工具定義後包裝成 OpenClaw `AnyAgentTool`
+4. 以 `patisco_` 前綴註冊（如 `patisco_getPIs`）
+
+Schema 處理：
+- 使用 `Type.Unsafe(inputSchema)` 包裝 MCP JSON Schema
+
+---
+
+## 五、目前正確操作流程
 
 ```bash
-# 1. 首次登入（互動式）
-openclaw auth patisco
-
-# 2. 重啟 gateway 觸發工具發現
-# （重啟後 discoverAndRegisterTools 自動執行 tools/list）
-
-# 3. 確認工具已註冊（console 會印出）
-# [patisco-auth] 已發現並註冊 N 個工具：patisco_get_orders, ...
-
-# 4. AI Agent 現在可以呼叫工具
-# JWT 到期前 5 分鐘會自動 refresh，使用者無感知
+cd /Users/kaemiin/LABORATORIES/openclaw
+pnpm openclaw plugins list
+pnpm openclaw models auth login --provider patisco --method patisco:login
+pnpm openclaw gateway restart
 ```
+
+成功訊號：
+
+- log 顯示：
+  - `[patisco-auth] 已發現並註冊 N 個 Patisco MCP 工具：...`
 
 ---
 
-## 六、MCP Protocol 格式（Streamable HTTP）
+## 六、JWT Refresh 策略
 
-**Request（POST https://mcp.patisco.com/mcp）：**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "get_orders",
-    "arguments": { "status": "pending", "limit": 10 }
-  },
-  "sessionId": "stable-hash-from-agent-dir"
-}
-```
-
-**Headers：**
-```
-Content-Type: application/json
-Accept: application/json, text/event-stream
-Authorization: Bearer <jwt>
-X-Api-Key: <apiKey>
-```
-
-**Response：**
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "content": [{ "type": "text", "text": "..." }],
-    "isError": false
-  }
-}
-```
+- JWT 有效期約 1 小時
+- 距到期 < 5 分鐘自動 `GET /auth/refresh`
+- 成功後回寫 credential store
+- refresh 失敗時要求重新登入
 
 ---
 
-## 七、關鍵規範（CLAUDE.md）
+## 七、已驗證狀態（本次整合）
 
-| 規範 | 實作方式 |
-|------|---------|
-| 禁止 `Type.Union` | 用 `Type.Unsafe(inputSchema)` 包裝 MCP JSON Schema |
-| 禁止 `format` 屬性 | MCP inputSchema 直接透傳，不加 `format` |
-| 敏感欄位 | `apiKey` 在 `ApiKeyCredential` 中自動被 `normalizeSecretInput` 處理 |
-| file lock | JWT 更新用 `upsertAuthProfileWithLock`（而非同步版） |
+- `patisco-auth` plugin 可 loaded
+- provider auth 可成功寫入 credential
+- tools/list 已成功註冊工具（實測 `patisco_getPIs`）
 
 ---
 
-## 八、參考檔案
+## 八、關鍵檔案
 
-| 檔案 | 用途 |
-|------|------|
-| `extensions/minimax-portal-auth/index.ts` | ProviderPlugin auth 參考 |
-| `extensions/memory-lancedb/index.ts` | `api.registerTool` + tool result 格式參考 |
-| `src/agents/auth-profiles/profiles.ts:67` | `upsertAuthProfileWithLock` 實作 |
-| `src/agents/auth-profiles/store.ts` | `ensureAuthProfileStore` 實作 |
-| `src/agents/auth-profiles/types.ts` | `TokenCredential`、`ApiKeyCredential` 型別 |
+- OpenClaw plugin
+  - `extensions/patisco-auth/index.ts`
+  - `extensions/patisco-auth/auth.ts`
+  - `extensions/patisco-auth/mcp.ts`
+- Patisco Gateway
+  - `/Users/kaemiin/WORK/PatiscoG4MCPGateway/src/routes/mcp.ts`
