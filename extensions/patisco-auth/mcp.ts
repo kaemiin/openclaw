@@ -1,5 +1,7 @@
 /**
  * Patisco MCP Client — 走 Unary JSON-RPC（POST /）。
+ * 正式環境: https://mcp.patisco.com
+ * 測試環境: https://patisco-g4-mcp-gateway.dz920507desm2.us-east-1.cs.amazonlightsail.com
  */
 import { ensureAuthProfileStore } from "../../src/agents/auth-profiles/store.js";
 import { maybeRefreshJwt, JWT_PROFILE_ID, API_KEY_PROFILE_ID } from "./auth.js";
