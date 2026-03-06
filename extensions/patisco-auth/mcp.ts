@@ -17,6 +17,7 @@ const MCP_URL = "https://patisco-g4-mcp-gateway.dz920507desm2.us-east-1.cs.amazo
 let requestId = 1;
 const sseBootstrapped = new Set<string>();
 const serverSessionBySeed = new Map<string, string>();
+const sseControllersBySessionId = new Map<string, AbortController>();
 
 // ── 憑證讀取 ──────────────────────────────────────────────────────────────────
 
@@ -93,49 +94,48 @@ async function ensureSseSession(
 ): Promise<string> {
   if (sseBootstrapped.has(sessionId)) return sessionId;
 
-  const headers = {
-    Accept: "text/event-stream",
-    Authorization: `Bearer ${creds.jwt}`,
-    "X-Api-Key": creds.apiKey,
-  };
+  const url = new URL(MCP_URL);
+  url.searchParams.set("sessionId", sessionId);
 
-  const tryOpen = async (withQuery: boolean): Promise<string | null> => {
-    const url = new URL(MCP_URL);
-    if (withQuery) url.searchParams.set("sessionId", sessionId);
+  const controller = new AbortController();
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "text/event-stream",
+      Authorization: `Bearer ${creds.jwt}`,
+      "X-Api-Key": creds.apiKey,
+    },
+    signal: controller.signal,
+  });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1800);
+  if (!res.ok) {
+    throw new Error(`SSE bootstrap 失敗 (${res.status})`);
+  }
 
+  // 保持 SSE 連線活著；部分伺服器只有在 SSE 連線存在時才接受 POST tools/*。
+  sseControllersBySessionId.set(sessionId, controller);
+  sseBootstrapped.add(sessionId);
+
+  // 持續讀取 stream，避免 runtime 提前回收。
+  void (async () => {
     try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers,
-        signal: controller.signal,
-      });
-      if (!res.ok) return null;
-
-      const headerSid = res.headers.get("mcp-session-id") || res.headers.get("x-session-id");
-      if (headerSid && headerSid.trim()) return headerSid.trim();
-
-      // 有些 server 會 redirect 到帶 sessionId 的 URL。
-      const finalUrl = new URL(res.url || url.toString());
-      const querySid = finalUrl.searchParams.get("sessionId");
-      if (querySid && querySid.trim()) return querySid.trim();
-
-      return sessionId;
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      while (true) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
     } catch {
-      return null;
+      // 連線中斷時，讓下次請求自動重建。
     } finally {
-      clearTimeout(timeout);
+      sseBootstrapped.delete(sessionId);
+      sseControllersBySessionId.delete(sessionId);
     }
-  };
-
-  const sid = (await tryOpen(true)) ?? (await tryOpen(false)) ?? sessionId;
-  sseBootstrapped.add(sid);
+  })();
 
   const seed = getSessionSeed(agentDir);
-  serverSessionBySeed.set(seed, sid);
-  return sid;
+  serverSessionBySeed.set(seed, sessionId);
+  return sessionId;
 }
 
 async function rpc<T>(
