@@ -1,0 +1,9 @@
+{
+  "id": "patisco-auth",
+  "providers": ["patisco"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

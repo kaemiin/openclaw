@@ -1,13 +1,14 @@
 /**
  * Patisco Auth — 處理 POST /auth/login 與 GET /auth/refresh。
- *
+ * 正式環境: https://mcp.patisco.com
+ * 測試環境: https://patisco-g4-mcp-gateway.dz920507desm2.us-east-1.cs.amazonlightsail.com
  * JWT 有效期 1 小時（後端 1-hour window）。
  * 每次呼叫 MCP 前由 mcp.ts 的 withFreshCreds() 自動 refresh。
  */
 import type { ProviderAuthContext, ProviderAuthResult } from "openclaw/plugin-sdk";
 import { upsertAuthProfileWithLock } from "../../src/agents/auth-profiles/profiles.js";
 
-const BASE_URL = "https://mcp.patisco.com";
+const BASE_URL = "https://patisco-g4-mcp-gateway.dz920507desm2.us-east-1.cs.amazonlightsail.com";
 
 export const JWT_PROFILE_ID = "patisco:token";
 export const API_KEY_PROFILE_ID = "patisco:api-key";
@@ -21,8 +22,12 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 export async function loginPatisco(
   ctx: ProviderAuthContext,
 ): Promise<ProviderAuthResult> {
-  const loginId = await ctx.prompter.text("帳號 (loginId):");
-  const password = await ctx.prompter.password("密碼:");
+  const loginId = await ctx.prompter.text({
+    message: "帳號 (loginId)",
+  });
+  const password = await ctx.prompter.text({
+    message: "密碼（輸入時會明文顯示）",
+  });
 
   const progress = ctx.prompter.progress("連線驗證中…");
 
