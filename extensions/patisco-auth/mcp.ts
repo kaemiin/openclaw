@@ -16,6 +16,7 @@ const MCP_URL = "https://patisco-g4-mcp-gateway.dz920507desm2.us-east-1.cs.amazo
 
 let requestId = 1;
 const sseBootstrapped = new Set<string>();
+const serverSessionBySeed = new Map<string, string>();
 
 // ── 憑證讀取 ──────────────────────────────────────────────────────────────────
 
@@ -73,44 +74,68 @@ type JsonRpcResponse<T = unknown> = {
   error?: { code: number; message: string; data?: unknown };
 };
 
-/** 根據 agentDir 產生穩定的 sessionId (用於後端 Server 路由)。 */
+function getSessionSeed(agentDir?: string): string {
+  return agentDir || process.cwd();
+}
+
+/** 根據 agentDir 產生穩定 session key；若 server 回傳正式 sessionId，優先使用。 */
 function getSessionId(agentDir?: string): string {
-  // 不使用 "global"：部分伺服器會拒絕或找不到該 session。
-  const seed = agentDir || process.cwd();
+  const seed = getSessionSeed(agentDir);
+  const serverSid = serverSessionBySeed.get(seed);
+  if (serverSid) return serverSid;
   return createHash("md5").update(seed).digest("hex");
 }
 
 async function ensureSseSession(
   creds: PatiscoCredentials,
   sessionId: string,
-): Promise<void> {
-  if (sseBootstrapped.has(sessionId)) return;
+  agentDir?: string,
+): Promise<string> {
+  if (sseBootstrapped.has(sessionId)) return sessionId;
 
-  const url = new URL(MCP_URL);
-  url.searchParams.set("sessionId", sessionId);
+  const headers = {
+    Accept: "text/event-stream",
+    Authorization: `Bearer ${creds.jwt}`,
+    "X-Api-Key": creds.apiKey,
+  };
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1500);
+  const tryOpen = async (withQuery: boolean): Promise<string | null> => {
+    const url = new URL(MCP_URL);
+    if (withQuery) url.searchParams.set("sessionId", sessionId);
 
-  try {
-    // 某些伺服器需要先建立 SSE session，後續 POST 才會被接受。
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "text/event-stream",
-        Authorization: `Bearer ${creds.jwt}`,
-        "X-Api-Key": creds.apiKey,
-      },
-      signal: controller.signal,
-    });
-    if (res.ok) {
-      sseBootstrapped.add(sessionId);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1800);
+
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        headers,
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+
+      const headerSid = res.headers.get("mcp-session-id") || res.headers.get("x-session-id");
+      if (headerSid && headerSid.trim()) return headerSid.trim();
+
+      // 有些 server 會 redirect 到帶 sessionId 的 URL。
+      const finalUrl = new URL(res.url || url.toString());
+      const querySid = finalUrl.searchParams.get("sessionId");
+      if (querySid && querySid.trim()) return querySid.trim();
+
+      return sessionId;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
     }
-  } catch {
-    // 非 SSE-only 伺服器或網路超時皆可忽略，交由 POST 流程處理。
-  } finally {
-    clearTimeout(timeout);
-  }
+  };
+
+  const sid = (await tryOpen(true)) ?? (await tryOpen(false)) ?? sessionId;
+  sseBootstrapped.add(sid);
+
+  const seed = getSessionSeed(agentDir);
+  serverSessionBySeed.set(seed, sid);
+  return sid;
 }
 
 async function rpc<T>(
@@ -119,22 +144,23 @@ async function rpc<T>(
   creds: PatiscoCredentials,
   agentDir?: string,
 ): Promise<T> {
-  const sessionId = getSessionId(agentDir);
-  const body: JsonRpcRequest = {
-    jsonrpc: "2.0",
-    id: requestId++,
-    method,
-    params,
-    sessionId,
-  };
+  let sessionId = getSessionId(agentDir);
 
-  // 伺服器目前要求 sessionId 必須放在 query parameter；
-  // body 仍保留 sessionId 以相容標準 JSON-RPC 封包。
-  const url = new URL(MCP_URL);
-  url.searchParams.set("sessionId", sessionId);
+  const doPost = async () => {
+    const body: JsonRpcRequest = {
+      jsonrpc: "2.0",
+      id: requestId++,
+      method,
+      params,
+      sessionId,
+    };
 
-  const doPost = async () =>
-    fetch(url, {
+    // 伺服器目前要求 sessionId 必須放在 query parameter；
+    // body 仍保留 sessionId 以相容標準 JSON-RPC 封包。
+    const url = new URL(MCP_URL);
+    url.searchParams.set("sessionId", sessionId);
+
+    return fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -144,6 +170,7 @@ async function rpc<T>(
       },
       body: JSON.stringify(body),
     });
+  };
 
   let res = await doPost();
 
@@ -152,7 +179,7 @@ async function rpc<T>(
 
     // 後端若要求先有 SSE session，嘗試自動 bootstrap 後重試一次。
     if (detail.includes("SSE session not found")) {
-      await ensureSseSession(creds, sessionId);
+      sessionId = await ensureSseSession(creds, sessionId, agentDir);
       res = await doPost();
       if (!res.ok) {
         const detail2 = await res.text().catch(() => res.statusText);
