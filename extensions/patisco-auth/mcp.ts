@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 const MCP_URL = "https://patisco-g4-mcp-gateway.dz920507desm2.us-east-1.cs.amazonlightsail.com/mcp";
 
 let requestId = 1;
+const sseBootstrapped = new Set<string>();
 
 // ── 憑證讀取 ──────────────────────────────────────────────────────────────────
 
@@ -48,7 +49,9 @@ export function loadCredentials(agentDir?: string): PatiscoCredentials | null {
 async function withFreshCreds(agentDir?: string): Promise<PatiscoCredentials> {
   const creds = loadCredentials(agentDir);
   if (!creds) {
-    throw new Error("尚未登入 Patisco，請先執行：openclaw auth patisco");
+    throw new Error(
+      "尚未登入 Patisco，請先執行：openclaw models auth login --provider patisco --method patisco:login",
+    );
   }
   return maybeRefreshJwt(creds, agentDir);
 }
@@ -77,6 +80,39 @@ function getSessionId(agentDir?: string): string {
   return createHash("md5").update(seed).digest("hex");
 }
 
+async function ensureSseSession(
+  creds: PatiscoCredentials,
+  sessionId: string,
+): Promise<void> {
+  if (sseBootstrapped.has(sessionId)) return;
+
+  const url = new URL(MCP_URL);
+  url.searchParams.set("sessionId", sessionId);
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    // 某些伺服器需要先建立 SSE session，後續 POST 才會被接受。
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "text/event-stream",
+        Authorization: `Bearer ${creds.jwt}`,
+        "X-Api-Key": creds.apiKey,
+      },
+      signal: controller.signal,
+    });
+    if (res.ok) {
+      sseBootstrapped.add(sessionId);
+    }
+  } catch {
+    // 非 SSE-only 伺服器或網路超時皆可忽略，交由 POST 流程處理。
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function rpc<T>(
   method: string,
   params: unknown,
@@ -97,20 +133,34 @@ async function rpc<T>(
   const url = new URL(MCP_URL);
   url.searchParams.set("sessionId", sessionId);
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json, text/event-stream",
-      Authorization: `Bearer ${creds.jwt}`,
-      "X-Api-Key": creds.apiKey,
-    },
-    body: JSON.stringify(body),
-  });
+  const doPost = async () =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: `Bearer ${creds.jwt}`,
+        "X-Api-Key": creds.apiKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+  let res = await doPost();
 
   if (!res.ok) {
     const detail = await res.text().catch(() => res.statusText);
-    throw new Error(`MCP Server 錯誤 (${res.status}): ${detail}`);
+
+    // 後端若要求先有 SSE session，嘗試自動 bootstrap 後重試一次。
+    if (detail.includes("SSE session not found")) {
+      await ensureSseSession(creds, sessionId);
+      res = await doPost();
+      if (!res.ok) {
+        const detail2 = await res.text().catch(() => res.statusText);
+        throw new Error(`MCP Server 錯誤 (${res.status}): ${detail2}`);
+      }
+    } else {
+      throw new Error(`MCP Server 錯誤 (${res.status}): ${detail}`);
+    }
   }
 
   const data = (await res.json()) as JsonRpcResponse<T>;
