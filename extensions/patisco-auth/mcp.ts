@@ -72,8 +72,9 @@ type JsonRpcResponse<T = unknown> = {
 
 /** 根據 agentDir 產生穩定的 sessionId (用於後端 Server 路由)。 */
 function getSessionId(agentDir?: string): string {
-  if (!agentDir) return "global";
-  return createHash("md5").update(agentDir).digest("hex");
+  // 不使用 "global"：部分伺服器會拒絕或找不到該 session。
+  const seed = agentDir || process.cwd();
+  return createHash("md5").update(seed).digest("hex");
 }
 
 async function rpc<T>(
@@ -156,8 +157,11 @@ async function initialize(
     },
     creds,
     agentDir,
-  ).catch(() => {
-    // 部分 HTTP server 不強制 initialize，忽略錯誤繼續
+  );
+
+  // 某些 MCP 伺服器需要 initialized 通知後才建立可用 session。
+  await rpc("notifications/initialized", {}, creds, agentDir).catch(() => {
+    // 有些 server 不要求此通知，忽略即可
   });
 }
 
