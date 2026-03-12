@@ -33,30 +33,32 @@ let importPiSdk = defaultImportPiSdk;
 const CODEX_PROVIDER = "openai-codex";
 const OPENAI_CODEX_GPT53_MODEL_ID = "gpt-5.3-codex";
 const OPENAI_CODEX_GPT53_SPARK_MODEL_ID = "gpt-5.3-codex-spark";
+const OPENAI_CODEX_GPT54_MODEL_ID = "gpt-5.4-codex";
+const OPENAI_CODEX_GPT54_SPARK_MODEL_ID = "gpt-5.4-codex-spark";
 
-function applyOpenAICodexSparkFallback(models: ModelCatalogEntry[]): void {
+function injectSparkVariant(
+  models: ModelCatalogEntry[],
+  baseId: string,
+  sparkId: string,
+): void {
   const hasSpark = models.some(
-    (entry) =>
-      entry.provider === CODEX_PROVIDER &&
-      entry.id.toLowerCase() === OPENAI_CODEX_GPT53_SPARK_MODEL_ID,
+    (entry) => entry.provider === CODEX_PROVIDER && entry.id.toLowerCase() === sparkId,
   );
   if (hasSpark) {
     return;
   }
-
   const baseModel = models.find(
-    (entry) =>
-      entry.provider === CODEX_PROVIDER && entry.id.toLowerCase() === OPENAI_CODEX_GPT53_MODEL_ID,
+    (entry) => entry.provider === CODEX_PROVIDER && entry.id.toLowerCase() === baseId,
   );
   if (!baseModel) {
     return;
   }
+  models.push({ ...baseModel, id: sparkId, name: sparkId });
+}
 
-  models.push({
-    ...baseModel,
-    id: OPENAI_CODEX_GPT53_SPARK_MODEL_ID,
-    name: OPENAI_CODEX_GPT53_SPARK_MODEL_ID,
-  });
+function applyOpenAICodexSparkFallback(models: ModelCatalogEntry[]): void {
+  injectSparkVariant(models, OPENAI_CODEX_GPT54_MODEL_ID, OPENAI_CODEX_GPT54_SPARK_MODEL_ID);
+  injectSparkVariant(models, OPENAI_CODEX_GPT53_MODEL_ID, OPENAI_CODEX_GPT53_SPARK_MODEL_ID);
 }
 
 export function resetModelCatalogCacheForTest() {
