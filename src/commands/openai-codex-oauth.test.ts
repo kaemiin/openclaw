@@ -52,6 +52,7 @@ describe("loginOpenAICodexOAuth", () => {
     mocks.createVpsAwareOAuthHandlers.mockReturnValue({
       onAuth: vi.fn(),
       onPrompt: vi.fn(),
+      onManualCodeInput: vi.fn(),
     });
     mocks.loginOpenAICodex.mockResolvedValue(creds);
 
@@ -66,6 +67,10 @@ describe("loginOpenAICodexOAuth", () => {
 
     expect(result).toEqual(creds);
     expect(mocks.loginOpenAICodex).toHaveBeenCalledOnce();
+    // onManualCodeInput is forwarded to loginOpenAICodex
+    expect(mocks.loginOpenAICodex).toHaveBeenCalledWith(
+      expect.objectContaining({ onManualCodeInput: expect.any(Function) }),
+    );
     expect(spin.stop).toHaveBeenCalledWith("OpenAI OAuth complete");
     expect(runtime.error).not.toHaveBeenCalled();
   });
@@ -74,6 +79,7 @@ describe("loginOpenAICodexOAuth", () => {
     mocks.createVpsAwareOAuthHandlers.mockReturnValue({
       onAuth: vi.fn(),
       onPrompt: vi.fn(),
+      onManualCodeInput: vi.fn(),
     });
     mocks.loginOpenAICodex.mockRejectedValue(new Error("oauth failed"));
 
