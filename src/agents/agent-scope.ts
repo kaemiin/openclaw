@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentModelFallbackValues } from "../config/model-input.js";
@@ -7,13 +8,20 @@ import {
   DEFAULT_AGENT_ID,
   normalizeAgentId,
   parseAgentSessionKey,
+  resolveAgentIdFromSessionKey,
 } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 import { normalizeSkillFilter } from "./skills/filter.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 const log = createSubsystemLogger("agent-scope");
 
-export { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+/** Strip null bytes from paths to prevent ENOTDIR errors. */
+function stripNullBytes(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\0/g, "");
+}
+
+export { resolveAgentIdFromSessionKey };
 
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number];
 
@@ -197,6 +205,41 @@ export function resolveAgentModelFallbacksOverride(
   return Array.isArray(raw.fallbacks) ? raw.fallbacks : undefined;
 }
 
+export function resolveFallbackAgentId(params: {
+  agentId?: string | null;
+  sessionKey?: string | null;
+}): string {
+  const explicitAgentId = typeof params.agentId === "string" ? params.agentId.trim() : "";
+  if (explicitAgentId) {
+    return normalizeAgentId(explicitAgentId);
+  }
+  return resolveAgentIdFromSessionKey(params.sessionKey);
+}
+
+export function resolveRunModelFallbacksOverride(params: {
+  cfg: OpenClawConfig | undefined;
+  agentId?: string | null;
+  sessionKey?: string | null;
+}): string[] | undefined {
+  if (!params.cfg) {
+    return undefined;
+  }
+  return resolveAgentModelFallbacksOverride(
+    params.cfg,
+    resolveFallbackAgentId({ agentId: params.agentId, sessionKey: params.sessionKey }),
+  );
+}
+
+export function hasConfiguredModelFallbacks(params: {
+  cfg: OpenClawConfig | undefined;
+  agentId?: string | null;
+  sessionKey?: string | null;
+}): boolean {
+  const fallbacksOverride = resolveRunModelFallbacksOverride(params);
+  const defaultFallbacks = resolveAgentModelFallbackValues(params.cfg?.agents?.defaults?.model);
+  return (fallbacksOverride ?? defaultFallbacks).length > 0;
+}
+
 export function resolveEffectiveModelFallbacks(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -214,18 +257,74 @@ export function resolveAgentWorkspaceDir(cfg: OpenClawConfig, agentId: string) {
   const id = normalizeAgentId(agentId);
   const configured = resolveAgentConfig(cfg, id)?.workspace?.trim();
   if (configured) {
-    return resolveUserPath(configured);
+    return stripNullBytes(resolveUserPath(configured));
   }
   const defaultAgentId = resolveDefaultAgentId(cfg);
   if (id === defaultAgentId) {
     const fallback = cfg.agents?.defaults?.workspace?.trim();
     if (fallback) {
-      return resolveUserPath(fallback);
+      return stripNullBytes(resolveUserPath(fallback));
     }
-    return resolveDefaultAgentWorkspaceDir(process.env);
+    return stripNullBytes(resolveDefaultAgentWorkspaceDir(process.env));
   }
   const stateDir = resolveStateDir(process.env);
-  return path.join(stateDir, `workspace-${id}`);
+  return stripNullBytes(path.join(stateDir, `workspace-${id}`));
+}
+
+function normalizePathForComparison(input: string): string {
+  const resolved = path.resolve(stripNullBytes(resolveUserPath(input)));
+  let normalized = resolved;
+  // Prefer realpath when available to normalize aliases/symlinks (for example /tmp -> /private/tmp)
+  // and canonical path case without forcing case-folding on case-sensitive macOS volumes.
+  try {
+    normalized = fs.realpathSync.native(resolved);
+  } catch {
+    // Keep lexical path for non-existent directories.
+  }
+  if (process.platform === "win32") {
+    return normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function resolveAgentIdsByWorkspacePath(
+  cfg: OpenClawConfig,
+  workspacePath: string,
+): string[] {
+  const normalizedWorkspacePath = normalizePathForComparison(workspacePath);
+  const ids = listAgentIds(cfg);
+  const matches: Array<{ id: string; workspaceDir: string; order: number }> = [];
+
+  for (let index = 0; index < ids.length; index += 1) {
+    const id = ids[index];
+    const workspaceDir = normalizePathForComparison(resolveAgentWorkspaceDir(cfg, id));
+    if (!isPathWithinRoot(normalizedWorkspacePath, workspaceDir)) {
+      continue;
+    }
+    matches.push({ id, workspaceDir, order: index });
+  }
+
+  matches.sort((left, right) => {
+    const workspaceLengthDelta = right.workspaceDir.length - left.workspaceDir.length;
+    if (workspaceLengthDelta !== 0) {
+      return workspaceLengthDelta;
+    }
+    return left.order - right.order;
+  });
+
+  return matches.map((entry) => entry.id);
+}
+
+export function resolveAgentIdByWorkspacePath(
+  cfg: OpenClawConfig,
+  workspacePath: string,
+): string | undefined {
+  return resolveAgentIdsByWorkspacePath(cfg, workspacePath)[0];
 }
 
 export function resolveAgentDir(cfg: OpenClawConfig, agentId: string) {

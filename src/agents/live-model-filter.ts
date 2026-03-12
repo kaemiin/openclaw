@@ -13,8 +13,6 @@ const ANTHROPIC_PREFIXES = [
 const OPENAI_MODELS = ["gpt-5.4", "gpt-5.2", "gpt-5.0"];
 const CODEX_MODELS = [
   "gpt-5.4",
-  "gpt-5.4-codex",
-  "gpt-5.4-codex-spark",
   "gpt-5.2",
   "gpt-5.2-codex",
   "gpt-5.3-codex",
@@ -25,7 +23,7 @@ const CODEX_MODELS = [
 ];
 const GOOGLE_PREFIXES = ["gemini-3"];
 const ZAI_PREFIXES = ["glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx"];
-const MINIMAX_PREFIXES = ["minimax-m2.1", "minimax-m2.5"];
+const MINIMAX_PREFIXES = ["minimax-m2.5", "minimax-m2.5"];
 const XAI_PREFIXES = ["grok-4"];
 
 function matchesPrefix(id: string, prefixes: string[]): boolean {
@@ -83,7 +81,7 @@ export function isModernModelRef(ref: ModelRef): boolean {
     return false;
   }
 
-  if (provider === "openrouter" || provider === "opencode") {
+  if (provider === "openrouter" || provider === "opencode" || provider === "opencode-go") {
     // OpenRouter/opencode are pass-through proxies; accept any model ID
     // rather than restricting to a static prefix list.
     return true;
